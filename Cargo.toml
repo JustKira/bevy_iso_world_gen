@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 bevy = "0.14.1"
 bevy_ecs_tilemap = "0.14.0"
+fastnoise-lite = "1.1.1"
 
 [profile.dev]
 opt-level = 1
