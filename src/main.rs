@@ -1,14 +1,22 @@
+mod utils;
+
 use bevy::prelude::*;
 use bevy_ecs_tilemap::prelude::*;
+use bevy_mod_picking::prelude::*;
 use fastnoise_lite::*;
+use utils::tilemap_picker_backend::TilemapPickerBackend;
 
-const WIDTH: u32 = 32;
-const HEIGHT: u32 = 32;
+const WIDTH: u32 = 16;
+const HEIGHT: u32 = 16;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
-        .add_plugins(TilemapPlugin)
+        .add_plugins((
+            DefaultPlugins.set(ImagePlugin::default_nearest()),
+            TilemapPlugin,
+            DefaultPickingPlugins,
+            TilemapPickerBackend,
+        ))
         .add_systems(Startup, (generate_world_map, setup).chain())
         .run();
 }
@@ -57,19 +65,26 @@ fn generate_world_map(mut commands: Commands, asset_server: Res<AssetServer>) {
 
             let tile_index = if negative_1_to_1 < -0.5 {
                 2
-            } else if negative_1_to_1 < -0.25 {
+            } else if negative_1_to_1 < -0.1 {
+                3
+            } else if negative_1_to_1 < 0.1 {
                 0
             } else {
                 1
             };
 
             let tile_entity = commands
-                .spawn(TileBundle {
-                    position: tile_pos,
-                    tilemap_id: TilemapId(tilemap_entity),
-                    texture_index: TileTextureIndex(tile_index),
-                    ..Default::default()
-                })
+                .spawn((
+                    TileBundle {
+                        position: tile_pos,
+                        tilemap_id: TilemapId(tilemap_entity),
+                        texture_index: TileTextureIndex(tile_index),
+                        ..Default::default()
+                    },
+                    On::<Pointer<Over>>::target_component_mut::<TileTextureIndex>(|_, t| {
+                        t.0 = 0;
+                    }),
+                ))
                 .id();
 
             tile_storage.set(&tile_pos, tile_entity);
