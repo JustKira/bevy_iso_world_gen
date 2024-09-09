@@ -4,21 +4,73 @@ use bevy::prelude::*;
 use bevy_ecs_tilemap::prelude::*;
 use bevy_mod_picking::prelude::*;
 use fastnoise_lite::*;
+use std::ops::Range;
 use utils::tilemap_picker_backend::TilemapPickerBackend;
 
-const WIDTH: u32 = 16;
-const HEIGHT: u32 = 16;
+const WIDTH: u32 = 32;
+const HEIGHT: u32 = 32;
 
-fn main() {
-    App::new()
-        .add_plugins((
-            DefaultPlugins.set(ImagePlugin::default_nearest()),
-            TilemapPlugin,
-            DefaultPickingPlugins,
-            TilemapPickerBackend,
-        ))
-        .add_systems(Startup, (generate_world_map, setup).chain())
-        .run();
+#[derive(Component)]
+struct PreviewBuilding {
+    offset: Vec2,
+}
+// Define tile types as an enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TileType {
+    Dirt,
+    Grass,
+    Stone,
+    Sand,
+    Water,
+    // Add more tile types as needed
+}
+
+// Implement a method to get the texture index for each tile type
+impl TileType {
+    fn texture_index(&self) -> u32 {
+        match self {
+            TileType::Dirt => 0,
+            TileType::Grass => 1,
+            TileType::Stone => 2,
+            TileType::Sand => 3,
+            TileType::Water => 4,
+            // Add more mappings as needed
+        }
+    }
+}
+
+// Define a structure for tile type ranges
+struct TileTypeRange {
+    tile_type: TileType,
+    range: Range<f32>,
+}
+
+#[derive(Resource)]
+struct TileTypeRanges {
+    ranges: Vec<TileTypeRange>,
+}
+
+impl TileTypeRanges {
+    fn new() -> Self {
+        Self { ranges: Vec::new() }
+    }
+
+    fn add(&mut self, tile_type: TileType, start: f32, end: f32) {
+        self.ranges.push(TileTypeRange {
+            tile_type,
+            range: start..end,
+        });
+    }
+
+    fn get_tile_type(&self, value: f32) -> TileType {
+        for range in &self.ranges {
+            if range.range.contains(&value) {
+                return range.tile_type;
+            }
+        }
+        // Default tile type if no range matches
+        TileType::Dirt
+    }
 }
 
 fn setup(mut commands: Commands) {
@@ -31,14 +83,29 @@ fn setup(mut commands: Commands) {
         },
         ..Default::default()
     });
+
+    // Set up tile type ranges
+    let mut tile_type_ranges = TileTypeRanges::new();
+    tile_type_ranges.add(TileType::Water, 0.0, 0.2);
+    tile_type_ranges.add(TileType::Sand, 0.2, 0.375);
+    tile_type_ranges.add(TileType::Dirt, 0.375, 0.45);
+    tile_type_ranges.add(TileType::Grass, 0.45, 0.81);
+    tile_type_ranges.add(TileType::Stone, 0.81, 1.0);
+
+    commands.insert_resource(tile_type_ranges);
 }
 
-fn generate_world_map(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let mut noise = FastNoiseLite::with_seed(1337);
+fn generate_world_map(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    tile_type_ranges: Res<TileTypeRanges>,
+) {
+    let mut noise = FastNoiseLite::with_seed(1325);
 
     noise.set_fractal_type(Some(FractalType::FBm));
-    noise.set_fractal_octaves(Some(4));
-    noise.set_frequency(Some(0.05));
+    noise.set_fractal_octaves(Some(5));
+    noise.set_frequency(Some(0.035));
+    noise.set_fractal_weighted_strength(Some(-0.5));
     noise.set_noise_type(Some(NoiseType::OpenSimplex2));
 
     // let mut noise_data = [[0.; HEIGHT as usize]; WIDTH as usize];
@@ -58,32 +125,45 @@ fn generate_world_map(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     for x in 0..WIDTH {
         for y in 0..HEIGHT {
-            let negative_1_to_1 = noise.get_noise_2d(x as f32, y as f32);
+            let noise_value = noise.get_noise_2d(x as f32, y as f32);
             // noise_data[x][y] = (negative_1_to_1 + 1.) / 2.;
 
             let tile_pos = TilePos { x, y };
 
-            let tile_index = if negative_1_to_1 < -0.5 {
-                2
-            } else if negative_1_to_1 < -0.1 {
-                3
-            } else if negative_1_to_1 < 0.1 {
-                0
-            } else {
-                1
-            };
+            let normalized_noise = (noise_value + 1.0) / 2.0; // Normalize to 0-1 range
+
+            let tile_type = tile_type_ranges.get_tile_type(normalized_noise);
 
             let tile_entity = commands
                 .spawn((
                     TileBundle {
                         position: tile_pos,
                         tilemap_id: TilemapId(tilemap_entity),
-                        texture_index: TileTextureIndex(tile_index),
+                        texture_index: TileTextureIndex(tile_type.texture_index()),
                         ..Default::default()
                     },
-                    On::<Pointer<Over>>::target_component_mut::<TileTextureIndex>(|_, t| {
-                        t.0 = 0;
-                    }),
+                    On::<Pointer<Over>>::run(
+                        move |event: Listener<Pointer<Over>>,
+                              mut preview_query: Query<(&mut Transform, &PreviewBuilding)>,
+                              tilemap_query: Query<(
+                            &TilemapGridSize,
+                            &TilemapType,
+                            &GlobalTransform,
+                        )>| {
+                            let (grid_size, map_type, tilemap_transform) = tilemap_query.single();
+                            let world_pos = tile_pos.center_in_world(grid_size, map_type);
+
+                            if let Ok((mut preview_transform, preview_building)) =
+                                preview_query.get_single_mut()
+                            {
+                                // let offset_world = tilemap_transform
+                                //     .transform_point(preview_building.offset.extend(0.0));
+                                preview_transform.translation =
+                                    tilemap_transform.transform_point(world_pos.extend(10.0));
+                                // + offset_world;
+                            }
+                        },
+                    ),
                 ))
                 .id();
 
@@ -99,11 +179,40 @@ fn generate_world_map(mut commands: Commands, asset_server: Res<AssetServer>) {
         texture: TilemapTexture::Single(texture_handle),
         tile_size,
         render_settings: TilemapRenderSettings {
-            render_chunk_size: UVec2::new(3, 1),
+            render_chunk_size: UVec2::new(2, 1),
             y_sort: true,
             ..Default::default()
         },
         transform: get_tilemap_center_transform(&map_size, &grid_size, &map_type, 1.0),
         ..Default::default()
     });
+}
+
+fn spawn_preview(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.spawn((
+        SpriteBundle {
+            texture: asset_server.load("h1(2x2).png"),
+            transform: Transform::from_xyz(0.0, 0.0, 3.0),
+            ..Default::default()
+        },
+        PreviewBuilding {
+            offset: Vec2::new(0.0, 0.0),
+        },
+    ));
+}
+
+// fn preview_snap_to_tilemap(cameras: Query<(Entity, &Camera, &OrthographicProjection)>
+//     tilemap_q: Query<(&TilemapSize, &TilemapGridSize, &TilemapType, &GlobalTransform)>,
+// ) {}
+
+fn main() {
+    App::new()
+        .add_plugins((
+            DefaultPlugins.set(ImagePlugin::default_nearest()),
+            TilemapPlugin,
+            DefaultPickingPlugins,
+            TilemapPickerBackend,
+        ))
+        .add_systems(Startup, (setup, generate_world_map, spawn_preview).chain())
+        .run();
 }
